@@ -58,46 +58,88 @@ flowchart TD
 
 ## 4. Data Model
 
-### 4.1 Entity Overview
+### 4.1 Design Philosophy — Zero Shared Data
 
-The workout domain is built around five core entities:
+**Nothing is shared between users. Nothing is hardcoded. No admin-imposed structure.**
+
+Every user builds their own personal library from scratch:
+- Their own muscle groups, named however they want
+- Their own subgroups within each muscle group
+- Their own exercises, each mapped to whichever groups/subgroups they choose
+- Their own workout sessions, each built from their own exercises
+
+This is a deliberate product decision — no user can tell another user what "Chest" means, what exercises exist, or how to categorize them.
+
+### 4.2 ID Strategy — UUIDs Everywhere
+
+All entities use **UUID** as the primary key instead of sequential integers (`1, 2, 3`).
+
+| Sequential ID | UUID |
+|---|---|
+| `/api/exercises/4` — guessable, exposes record count | `/api/exercises/a3f9b2c1-...` — unguessable |
+| Easy to enumerate all records | No enumeration possible |
+
+In JPA: `@GeneratedValue(strategy = GenerationType.UUID)` with `String id`. Hibernate generates the UUID automatically.
+
+### 4.3 Entity Overview
 
 | Entity | Role |
 |---|---|
-| `User` | An account. Owns all data. |
-| `WorkoutSession` | A single training day — e.g. "Monday July 14". Belongs to one User. |
-| `Exercise` | A global template — "Bench Press", "Pull-up". Has an image and muscle group. Shared across all users. |
-| `WorkoutExercise` | The bridge: "I did Bench Press during my Monday session". Holds ordering and rest time config. |
+| `User` | An account. Owns all data beneath it. |
+| `MuscleGroup` | A user-defined muscle group (e.g. "Chest", "Back"). Owned by one User. |
+| `MuscleSubgroup` | A user-defined subdivision of a MuscleGroup (e.g. "Upper", "Mid"). Optional. |
+| `Exercise` | A user-defined exercise with a name and optional image. Owned by one User. |
+| `ExerciseMuscleTarget` | Links an Exercise to a MuscleGroup and optionally a MuscleSubgroup. |
+| `WorkoutSession` | A single training day. Owned by one User. |
+| `WorkoutExercise` | An exercise performed within a session. Links Session → Exercise. |
 | `ExerciseSet` | A single set within a WorkoutExercise — reps, weight, completion status. |
 
-### 4.2 Class Diagram
+### 4.4 Class Diagram
 
 ```mermaid
 classDiagram
     class User {
-        +Long id
+        +String id
         +String username
         +String email
         +String password
     }
 
+    class MuscleGroup {
+        +String id
+        +User user
+        +String name
+    }
+
+    class MuscleSubgroup {
+        +String id
+        +MuscleGroup muscleGroup
+        +String name
+    }
+
+    class Exercise {
+        +String id
+        +User user
+        +String name
+        +String imageUrl
+    }
+
+    class ExerciseMuscleTarget {
+        +String id
+        +Exercise exercise
+        +MuscleGroup muscleGroup
+        +MuscleSubgroup muscleSubgroup
+    }
+
     class WorkoutSession {
-        +Long id
+        +String id
         +User user
         +LocalDate date
         +String notes
     }
 
-    class Exercise {
-        +Long id
-        +String name
-        +String muscleGroup
-        +String description
-        +String imageUrl
-    }
-
     class WorkoutExercise {
-        +Long id
+        +String id
         +WorkoutSession workoutSession
         +Exercise exercise
         +Integer restTimeSeconds
@@ -105,7 +147,7 @@ classDiagram
     }
 
     class ExerciseSet {
-        +Long id
+        +String id
         +WorkoutExercise workoutExercise
         +Integer setNumber
         +Integer reps
@@ -114,49 +156,73 @@ classDiagram
         +Boolean completed
     }
 
+    User "1" --> "0..*" MuscleGroup : owns
+    User "1" --> "0..*" Exercise : owns
     User "1" --> "0..*" WorkoutSession : owns
+    MuscleGroup "1" --> "0..*" MuscleSubgroup : has
+    Exercise "1" --> "0..*" ExerciseMuscleTarget : targets
+    MuscleGroup "1" --> "0..*" ExerciseMuscleTarget : referenced by
+    MuscleSubgroup "1" --> "0..*" ExerciseMuscleTarget : referenced by
     WorkoutSession "1" --> "1..*" WorkoutExercise : contains
-    Exercise "1" --> "0..*" WorkoutExercise : referenced by
+    Exercise "1" --> "0..*" WorkoutExercise : used in
     WorkoutExercise "1" --> "1..*" ExerciseSet : has
 ```
 
-### 4.3 Entity Relationship Diagram
+### 4.5 Entity Relationship Diagram
 
 ```mermaid
 erDiagram
     USER {
-        bigint id PK
+        varchar id PK
         varchar username
         varchar email
         varchar password
     }
 
+    MUSCLE_GROUP {
+        varchar id PK
+        varchar user_id FK
+        varchar name
+    }
+
+    MUSCLE_SUBGROUP {
+        varchar id PK
+        varchar muscle_group_id FK
+        varchar name
+    }
+
+    EXERCISE {
+        varchar id PK
+        varchar user_id FK
+        varchar name
+        varchar image_url
+    }
+
+    EXERCISE_MUSCLE_TARGET {
+        varchar id PK
+        varchar exercise_id FK
+        varchar muscle_group_id FK
+        varchar muscle_subgroup_id FK
+    }
+
     WORKOUT_SESSION {
-        bigint id PK
-        bigint user_id FK
+        varchar id PK
+        varchar user_id FK
         date date
         text notes
     }
 
-    EXERCISE {
-        bigint id PK
-        varchar name
-        varchar muscle_group
-        text description
-        varchar image_url
-    }
-
     WORKOUT_EXERCISE {
-        bigint id PK
-        bigint workout_session_id FK
-        bigint exercise_id FK
+        varchar id PK
+        varchar workout_session_id FK
+        varchar exercise_id FK
         int rest_time_seconds
         int order_index
     }
 
     EXERCISE_SET {
-        bigint id PK
-        bigint workout_exercise_id FK
+        varchar id PK
+        varchar workout_exercise_id FK
         int set_number
         int reps
         numeric weight
@@ -164,13 +230,19 @@ erDiagram
         boolean completed
     }
 
+    USER ||--o{ MUSCLE_GROUP : "owns"
+    USER ||--o{ EXERCISE : "owns"
     USER ||--o{ WORKOUT_SESSION : "owns"
+    MUSCLE_GROUP ||--o{ MUSCLE_SUBGROUP : "has"
+    EXERCISE ||--o{ EXERCISE_MUSCLE_TARGET : "targets"
+    MUSCLE_GROUP ||--o{ EXERCISE_MUSCLE_TARGET : "referenced by"
+    MUSCLE_SUBGROUP |o--o{ EXERCISE_MUSCLE_TARGET : "referenced by"
     WORKOUT_SESSION ||--|{ WORKOUT_EXERCISE : "contains"
-    EXERCISE ||--o{ WORKOUT_EXERCISE : "referenced by"
+    EXERCISE ||--o{ WORKOUT_EXERCISE : "used in"
     WORKOUT_EXERCISE ||--|{ EXERCISE_SET : "has"
 ```
 
-### 4.4 Set Model — Weighted vs Bodyweight
+### 4.6 Set Model — Weighted vs Bodyweight
 
 `ExerciseSet` supports both tracking styles using two fields together:
 
@@ -373,10 +445,14 @@ gantt
 | Decision | Choice | Reason |
 |---|---|---|
 | Frontend/backend coupling | Fully decoupled (REST) | Enables independent deployment on AWS; cleaner separation of concerns |
+| ID strategy | UUID (`String`) on all entities | Sequential IDs are enumerable and expose record counts; UUIDs are unguessable |
+| Data ownership | Everything owned by the user — no shared/global data | Core product philosophy: users have 100% control over their own experience |
+| Muscle group structure | `MuscleGroup` + `MuscleSubgroup` as separate user-owned entities | Users define their own hierarchy freely; no hardcoded list, no admin-imposed limits |
+| Exercise muscle targeting | `ExerciseMuscleTarget` junction with nullable subgroup | An exercise can target a group without a subgroup, or target specific subgroups |
 | Set model | Single entity with `isBodyweight` flag + nullable `weight` | Avoids a separate table for a minor variant; simpler queries |
 | Exercise images | `imageUrl` string on `Exercise` | Images are stored externally (S3 in future); DB stores only the reference |
 | Schema management | Hibernate `ddl-auto=update` | Sufficient for development; will migrate to Flyway or Liquibase before AWS deployment |
-| Auth | Not yet decided | Deliberately deferred — one phase at a time |
+| Auth | JWT (stateless tokens) | Stateless — works across multiple AWS instances without a shared session store |
 
 ### Auth process
 
